@@ -62,6 +62,7 @@ import (
 	"github.com/dolthub/dolt/go/libraries/utils/dynassert"
 	"github.com/dolthub/dolt/go/libraries/utils/filesys"
 	"github.com/dolthub/dolt/go/libraries/utils/gitauth"
+	"github.com/dolthub/dolt/go/store/blobstore"
 	"github.com/dolthub/dolt/go/store/nbs"
 	"github.com/dolthub/dolt/go/store/util/tempfiles"
 )
@@ -226,6 +227,8 @@ func main() {
 }
 
 func runMain() int {
+	defer blobstore.DumpGitCallStats()
+
 	args := os.Args[1:]
 
 	start := time.Now()

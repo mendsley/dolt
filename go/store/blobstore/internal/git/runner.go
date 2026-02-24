@@ -25,6 +25,7 @@ import (
 	"os"
 	"os/exec"
 	"strings"
+	"time"
 
 	"github.com/dolthub/dolt/go/libraries/utils/gitauth"
 )
@@ -38,6 +39,8 @@ type Runner struct {
 	gitDir  string
 	// extraEnv is appended to os.Environ() for every command.
 	extraEnv []string
+	// stats collects per-call-type timing information.
+	stats *GitCallStats
 }
 
 // NewRunner creates a Runner using the git binary on PATH.
@@ -54,6 +57,7 @@ func NewRunnerWithGitPath(gitDir, gitPath string) *Runner {
 	return &Runner{
 		gitPath: gitPath,
 		gitDir:  gitDir,
+		stats:   globalStats,
 	}
 }
 
@@ -143,7 +147,10 @@ func (r *Runner) Run(ctx context.Context, opts RunOptions, args ...string) ([]by
 		}
 	}
 
+	callType := callTypeFromArgs(args)
+	start := time.Now()
 	err := cmd.Run()
+	r.stats.Record(callType, time.Since(start))
 	out := buf.Bytes()
 	if err == nil {
 		return out, nil
@@ -196,21 +203,27 @@ func (r *Runner) Start(ctx context.Context, opts RunOptions, args ...string) (io
 
 	// Wrap stdout so that Close also waits to avoid zombies if callers bail early.
 	rc := &cmdReadCloser{
-		r:      stdout,
-		cmd:    cmd,
-		stderr: &stderr,
-		args:   append([]string(nil), args...),
-		dir:    cmd.Dir,
+		r:         stdout,
+		cmd:       cmd,
+		stderr:    &stderr,
+		args:      append([]string(nil), args...),
+		dir:       cmd.Dir,
+		stats:     r.stats,
+		callType:  callTypeFromArgs(args),
+		startTime: time.Now(),
 	}
 	return rc, cmd, nil
 }
 
 type cmdReadCloser struct {
-	r      io.ReadCloser
-	cmd    *exec.Cmd
-	stderr *bytes.Buffer
-	args   []string
-	dir    string
+	r         io.ReadCloser
+	cmd       *exec.Cmd
+	stderr    *bytes.Buffer
+	args      []string
+	dir       string
+	stats     *GitCallStats
+	callType  string
+	startTime time.Time
 }
 
 func (c *cmdReadCloser) Read(p []byte) (int, error) { return c.r.Read(p) }
@@ -218,6 +231,7 @@ func (c *cmdReadCloser) Read(p []byte) (int, error) { return c.r.Read(p) }
 func (c *cmdReadCloser) Close() error {
 	_ = c.r.Close()
 	err := c.cmd.Wait()
+	c.stats.Record(c.callType, time.Since(c.startTime))
 	if err == nil {
 		return nil
 	}
@@ -248,6 +262,16 @@ func (r *Runner) env(opts RunOptions) []string {
 	env = append(env, r.extraEnv...)
 	env = append(env, opts.Env...)
 	return env
+}
+
+// callTypeFromArgs returns the first non-flag argument as the call type key.
+func callTypeFromArgs(args []string) string {
+	for _, a := range args {
+		if len(a) > 0 && a[0] != '-' {
+			return a
+		}
+	}
+	return "unknown"
 }
 
 func formatOutput(out []byte) string {
